@@ -1,0 +1,113 @@
+name: ESP-IDF projects
+
+on:
+  pull_request:
+    paths:
+      - "README.md"
+      - "docs/**"
+      - "examples/README.md"
+      - "examples/esp-idf/**"
+      - "firmware/**"
+      - ".github/workflows/esp-idf-projects.yml"
+      - ".github/scripts/**"
+  push:
+    branches:
+      - main
+    paths:
+      - "README.md"
+      - "docs/**"
+      - "examples/README.md"
+      - "examples/esp-idf/**"
+      - "firmware/**"
+      - ".github/workflows/esp-idf-projects.yml"
+      - ".github/scripts/**"
+  workflow_dispatch:
+    inputs:
+      project:
+        description: "ESP-IDF project directory name, path, or all"
+        required: false
+        default: "all"
+
+permissions:
+  contents: read
+
+jobs:
+  self-check:
+    name: Repository self-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run repository self-check
+        run: python .github/scripts/repo_self_check.py
+
+  discover:
+    name: Discover ESP-IDF projects
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.projects.outputs.matrix }}
+      has_projects: ${{ steps.projects.outputs.has_projects }}
+      projects: ${{ steps.projects.outputs.projects }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Discover changed ESP-IDF projects
+        id: projects
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            python .github/scripts/discover_esp_idf_projects.py \
+              --project "${{ inputs.project }}"
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            python .github/scripts/discover_esp_idf_projects.py \
+              --base-ref "${{ github.event.pull_request.base.sha }}" \
+              --head-ref "${{ github.sha }}"
+          else
+            before="${{ github.event.before }}"
+            if [[ "$before" == "0000000000000000000000000000000000000000" ]]; then
+              before=""
+            fi
+            python .github/scripts/discover_esp_idf_projects.py \
+              --base-ref "$before" \
+              --head-ref "${{ github.sha }}"
+          fi
+
+      - name: Summary
+        shell: bash
+        run: |
+          if [[ "${{ steps.projects.outputs.has_projects }}" == "true" ]]; then
+            {
+              echo "### ESP-IDF projects selected"
+              echo
+              echo '${{ steps.projects.outputs.projects }}' | tr ',' '\n' | sed '/^$/d' | sed 's/^/- /'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No ESP-IDF project changes detected." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  build:
+    name: Build ${{ matrix.project }}
+    needs:
+      - self-check
+      - discover
+    if: needs.discover.outputs.has_projects == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build with ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.4
+          target: esp32p4
+          path: ${{ matrix.project }}
